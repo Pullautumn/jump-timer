@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">跳转计时器</string>
+    <string name="accessibility_desc">用于检测页面和 App 跳转，跳转发生时在悬浮窗显示从 1 开始的计时。本服务不收集、不上传任何数据，所有处理都在本机完成。</string>
+</resources>
