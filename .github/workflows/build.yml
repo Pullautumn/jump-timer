@@ -1,0 +1,106 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 配置 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 配置 Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: 安装 build-tools 与 platform
+        run: |
+          sdkmanager "platforms;android-34" "build-tools;34.0.0"
+          echo "ANDROID_JAR=$ANDROID_HOME/platforms/android-34/android.jar" >> $GITHUB_ENV
+          echo "BUILD_TOOLS=$ANDROID_HOME/build-tools/34.0.0" >> $GITHUB_ENV
+
+      - name: 编译资源（aapt2 compile）
+        run: |
+          mkdir -p build/gen build/obj build/dex dist
+          "$BUILD_TOOLS/aapt2" compile --dir jump_timer/src/res -o build/res.zip
+
+      - name: 链接资源并生成 R.java（aapt2 link）
+        run: |
+          "$BUILD_TOOLS/aapt2" link \
+            -o build/base.apk \
+            -I "$ANDROID_JAR" \
+            --manifest jump_timer/src/AndroidManifest.xml \
+            --java build/gen \
+            --min-sdk-version 21 \
+            --target-sdk-version 34 \
+            build/res.zip
+
+      - name: 编译 Java 源码
+        run: |
+          find jump_timer/src -name "*.java" > build/sources.txt
+          find build/gen -name "*.java" >> build/sources.txt
+          cat build/sources.txt
+          javac -source 8 -target 8 -encoding UTF-8 \
+            -bootclasspath "$ANDROID_JAR" \
+            -classpath "$ANDROID_JAR" \
+            -d build/obj \
+            @build/sources.txt
+
+      - name: 转换为 dex（d8）
+        run: |
+          find build/obj -name "*.class" > build/classes.txt
+          "$BUILD_TOOLS/d8" --lib "$ANDROID_JAR" --min-api 21 \
+            --output build/dex \
+            $(cat build/classes.txt)
+          ls -la build/dex
+
+      - name: 打包 dex 进 APK
+        run: |
+          cd build/dex
+          zip -u ../base.apk classes.dex
+          cd ../..
+
+      - name: 对齐（zipalign）
+        run: |
+          "$BUILD_TOOLS/zipalign" -f -p 4 build/base.apk build/aligned.apk
+
+      - name: 生成签名密钥
+        run: |
+          keytool -genkeypair -v \
+            -keystore build/release.keystore \
+            -alias jump_timer \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass android -keypass android \
+            -dname "CN=Jump Timer, OU=Dev, O=Local, L=NA, ST=NA, C=CN"
+
+      - name: 签名 APK（apksigner）
+        run: |
+          "$BUILD_TOOLS/apksigner" sign \
+            --ks build/release.keystore \
+            --ks-key-alias jump_timer \
+            --ks-pass pass:android \
+            --key-pass pass:android \
+            --out dist/JumpTimer.apk \
+            build/aligned.apk
+          "$BUILD_TOOLS/apksigner" verify dist/JumpTimer.apk
+
+      - name: 显示产物信息
+        run: |
+          ls -lh dist/
+          echo "APK 构建完成"
+
+      - name: 上传 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: JumpTimer-APK
+          path: dist/JumpTimer.apk
+          retention-days: 30
