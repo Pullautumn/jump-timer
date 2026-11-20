@@ -1,229 +1,166 @@
 package com.timer.jump;
 
-import android.annotation.SuppressLint;
-import android.content.Context;
+import android.app.Activity;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Build;
-import android.os.Handler;
-import android.os.Looper;
+import android.os.Bundle;
 import android.provider.Settings;
-import android.view.Gravity;
-import android.view.MotionEvent;
 import android.view.View;
-import android.view.WindowManager;
+import android.view.ViewGroup;
+import android.widget.Button;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.Toast;
 
 /**
- * 悬浮计时窗：显示"距上次跳转 N 秒"。
+ * 主界面：申请两个权限，显示使用说明。
  *
- * 特性：
- *   · 单例，全局一个
- *   · 可拖动（手指拖到任意位置）
- *   · 点击穿透不了，但只占自己那块区域
- *   · 跟随主线程刷新，100ms 一次
+ * 注意：这里全部用匿名内部类而不是 lambda。
+ * 原因：CI 用 JDK 17 编译、-bootclasspath 指向 android.jar，
+ * lambda 需要 LambdaMetafactory，而 android.jar 里没有，
+ * 会导致 "Unable to find method metafactory" 编译错误。
  */
-public final class TimerOverlay {
+public class MainActivity extends Activity {
 
-    private static final int TICK_MS = 100;
+    private TextView status;
 
-    private static TimerOverlay sInstance;
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
 
-    private TextView view;
-    private WindowManager wm;
-    private WindowManager.LayoutParams lp;
-    private final Handler handler = new Handler(Looper.getMainLooper());
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        int pad = dp(20);
+        root.setPadding(pad, pad, pad, pad);
+        root.setBackgroundColor(0xFFF5F5F7);
 
-    private volatile long startAt = System.currentTimeMillis();
-    private volatile String event = "等待跳转";
-    private volatile boolean running;
+        TextView title = new TextView(this);
+        title.setText("跳转计时器");
+        title.setTextSize(22);
+        title.setTextColor(0xFF111111);
+        root.addView(title);
 
-    private boolean added;
+        TextView sub = new TextView(this);
+        sub.setText("页面 / App 跳转时，悬浮窗从 1 开始计时");
+        sub.setTextSize(13);
+        sub.setTextColor(0xFF666666);
+        sub.setPadding(0, dp(6), 0, dp(20));
+        root.addView(sub);
 
-    private TimerOverlay() {
+        Button btnOverlay = new Button(this);
+        btnOverlay.setText("① 授予「悬浮窗」权限");
+        btnOverlay.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                requestOverlay();
+            }
+        });
+        root.addView(btnOverlay);
+
+        Button btnAccess = new Button(this);
+        btnAccess.setText("② 开启「无障碍服务」");
+        btnAccess.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                requestAccessibility();
+            }
+        });
+        root.addView(btnAccess);
+
+        status = new TextView(this);
+        status.setTextSize(12);
+        status.setPadding(0, dp(16), 0, 0);
+        root.addView(status);
+
+        ScrollView scroll = new ScrollView(this);
+        TextView help = new TextView(this);
+        help.setTextSize(12);
+        help.setTextColor(0xFF444444);
+        help.setPadding(0, dp(20), 0, 0);
+        help.setText(
+                "使用说明\n\n"
+                        + "1. 点上面两个按钮，分别授予权限\n\n"
+                        + "2. 无障碍服务在「已下载的应用」或「已安装的服务」里找到本应用并开启\n\n"
+                        + "3. 开启后悬浮窗出现，显示「⏱ 1 s 等待跳转」\n\n"
+                        + "4. 切换到任何 App 或切换页面，秒数立即重置为 1\n\n"
+                        + "5. 悬浮窗可按住拖动到任意位置\n\n\n"
+                        + "检测范围\n\n"
+                        + "· App 之间切换（包名变化）\n"
+                        + "· Activity 页面切换（类名变化）\n"
+                        + "· 弹窗、对话框等新窗口出现\n\n\n"
+                        + "不检测的情况\n\n"
+                        + "· 同一页面内的内容滚动、列表刷新\n"
+                        + "· 输入法、系统权限弹窗（已过滤）\n"
+                        + "· Flutter / Compose 应用内部跳转（它们不产生新窗口）\n\n\n"
+                        + "常见问题\n\n"
+                        + "Q: 秒数不动？\n"
+                        + "A: 检查无障碍服务是否已开启，部分手机需要「锁定后台」防止被杀。\n\n"
+                        + "Q: 小米/华为上重启后失效？\n"
+                        + "A: 到「电池优化」里把本应用设为「不限制」。");
+        scroll.addView(help);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f);
+        root.addView(scroll, lp);
+
+        setContentView(root);
     }
 
-    public static synchronized TimerOverlay get() {
-        if (sInstance == null) {
-            sInstance = new TimerOverlay();
-        }
-        return sInstance;
+    @Override
+    protected void onResume() {
+        super.onResume();
+        refreshStatus();
     }
 
-    /** 跳转发生：归零，从 1 重新数 */
-    public void reset(String desc) {
-        this.startAt = System.currentTimeMillis();
-        this.event = desc == null ? "" : desc;
-        this.running = true;
-        refresh();
+    private void refreshStatus() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("悬浮窗权限：").append(hasOverlay() ? "✅ 已授予" : "❌ 未授予").append("\n");
+        sb.append("无障碍服务：").append(hasAccessibility() ? "✅ 已开启" : "❌ 未开启");
+        status.setText(sb.toString());
     }
 
-    @SuppressLint("ClickableViewAccessibility")
-    public void show(Context context) {
-        if (context == null) {
+    private void requestOverlay() {
+        if (hasOverlay()) {
+            Toast.makeText(this, "已授予", Toast.LENGTH_SHORT).show();
             return;
         }
-        Context app = context.getApplicationContext();
-
-        handler.post(() -> {
-            try {
-                if (!canDrawOverlays(app)) {
-                    // 没权限，尝试跳到授权页
-                    requestOverlayPermission(app);
-                    return;
-                }
-
-                if (view == null) {
-                    view = buildView(app);
-                }
-                if (wm == null) {
-                    wm = (WindowManager) app.getSystemService(Context.WINDOW_SERVICE);
-                }
-                if (wm == null) {
-                    return;
-                }
-
-                if (!added) {
-                    lp = buildParams(app);
-                    wm.addView(view, lp);
-                    added = true;
-                    bindDrag(app);
-                }
-
-                running = true;
-                handler.removeCallbacks(tick);
-                handler.post(tick);
-                refresh();
-            } catch (Throwable ignored) {
-            }
-        });
-    }
-
-    public void hide() {
-        handler.post(() -> {
-            running = false;
-            handler.removeCallbacks(tick);
-            try {
-                if (added && wm != null && view != null) {
-                    wm.removeView(view);
-                }
-            } catch (Throwable ignored) {
-            }
-            added = false;
-        });
-    }
-
-    // ==================== 内部实现 ====================
-
-    @SuppressLint("SetTextI18n")
-    private TextView buildView(Context ctx) {
-        TextView tv = new TextView(ctx);
-        tv.setTextColor(0xFFFFFFFF);
-        tv.setTextSize(13f);
-        int p = dp(ctx, 10);
-        tv.setPadding(p, dp(ctx, 6), p, dp(ctx, 6));
-        tv.setBackgroundColor(0xC8000000);
-        tv.setGravity(Gravity.START);
-        tv.setText("⏱ 1 s\n等待跳转");
-        return tv;
-    }
-
-    private WindowManager.LayoutParams buildParams(Context ctx) {
-        WindowManager.LayoutParams p = new WindowManager.LayoutParams();
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            p.type = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY;
-        } else {
-            p.type = WindowManager.LayoutParams.TYPE_PHONE;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            Intent i = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:" + getPackageName()));
+            startActivity(i);
         }
-        p.format = android.graphics.PixelFormat.TRANSLUCENT;
-        p.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
-        p.gravity = Gravity.TOP | Gravity.START;
-        p.x = dp(ctx, 12);
-        p.y = dp(ctx, 180);
-        p.width = WindowManager.LayoutParams.WRAP_CONTENT;
-        p.height = WindowManager.LayoutParams.WRAP_CONTENT;
-        return p;
     }
 
-    /** 拖动：手指按下后跟随移动 */
-    @SuppressLint("ClickableViewAccessibility")
-    private void bindDrag(Context ctx) {
-        if (view == null || lp == null || wm == null) {
-            return;
-        }
-        final int[] down = new int[2];
-        final float[] touch = new float[2];
-
-        view.setOnTouchListener((v, e) -> {
-            switch (e.getAction()) {
-                case MotionEvent.ACTION_DOWN:
-                    down[0] = lp.x;
-                    down[1] = lp.y;
-                    touch[0] = e.getRawX();
-                    touch[1] = e.getRawY();
-                    return true;
-                case MotionEvent.ACTION_MOVE:
-                    lp.x = down[0] + (int) (e.getRawX() - touch[0]);
-                    lp.y = down[1] + (int) (e.getRawY() - touch[1]);
-                    try {
-                        wm.updateViewLayout(view, lp);
-                    } catch (Throwable ignored) {
-                    }
-                    return true;
-                case MotionEvent.ACTION_UP:
-                    // 拖得太近算点击，不做处理
-                    return true;
-            }
-            return false;
-        });
+    private void requestAccessibility() {
+        Intent i = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
+        startActivity(i);
+        Toast.makeText(this, "找到「跳转计时器」并开启", Toast.LENGTH_LONG).show();
     }
 
-    private final Runnable tick = new Runnable() {
-        @Override
-        public void run() {
-            if (!running) {
-                return;
-            }
-            refresh();
-            handler.postDelayed(this, TICK_MS);
-        }
-    };
-
-    @SuppressLint("SetTextI18n")
-    private void refresh() {
-        handler.post(() -> {
-            if (view == null) {
-                return;
-            }
-            long ms = System.currentTimeMillis() - startAt;
-            long sec = ms / 1000L + 1L;      // 从 1 开始
-            String head = "⏱ " + sec + " s";
-            String body = event;
-            view.setText(body.isEmpty() ? head : head + "\n" + body);
-        });
-    }
-
-    // ==================== 权限 ====================
-
-    private static boolean canDrawOverlays(Context ctx) {
+    private boolean hasOverlay() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
             return true;
         }
-        return Settings.canDrawOverlays(ctx);
+        return Settings.canDrawOverlays(this);
     }
 
-    private static void requestOverlayPermission(Context ctx) {
+    private boolean hasAccessibility() {
         try {
-            Intent i = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                    Uri.parse("package:" + ctx.getPackageName()));
-            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            ctx.startActivity(i);
-        } catch (Throwable ignored) {
+            String enabled = Settings.Secure.getString(
+                    getContentResolver(),
+                    Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+            if (enabled == null) {
+                return false;
+            }
+            String me = getPackageName() + "/" + JumpDetectService.class.getName();
+            return enabled.contains(me) || enabled.contains(getPackageName());
+        } catch (Throwable t) {
+            return false;
         }
     }
 
-    private static int dp(Context ctx, int v) {
-        return (int) (v * ctx.getResources().getDisplayMetrics().density + 0.5f);
+    private int dp(int v) {
+        return (int) (v * getResources().getDisplayMetrics().density + 0.5f);
     }
 }
