@@ -19,22 +19,71 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: 配置 Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: 安装 build-tools 与 platform
+      - name: 检查预装的 Android SDK
         run: |
-          sdkmanager "platforms;android-34" "build-tools;34.0.0"
-          echo "ANDROID_JAR=$ANDROID_HOME/platforms/android-34/android.jar" >> $GITHUB_ENV
-          echo "BUILD_TOOLS=$ANDROID_HOME/build-tools/34.0.0" >> $GITHUB_ENV
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          ls -1 "$ANDROID_HOME" || true
+          echo "--- build-tools ---"
+          ls -1 "$ANDROID_HOME/build-tools" || true
+          echo "--- platforms ---"
+          ls -1 "$ANDROID_HOME/platforms" || true
+
+      - name: 安装所需 SDK 组件并导出路径
+        run: |
+          set -e
+
+          SDKMGR=""
+          for p in \
+            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "$ANDROID_HOME/cmdline-tools/bin/sdkmanager" \
+            "$ANDROID_HOME/tools/bin/sdkmanager"
+          do
+            if [ -x "$p" ]; then SDKMGR="$p"; break; fi
+          done
+
+          if [ -z "$SDKMGR" ]; then
+            echo "未找到 sdkmanager，使用预装组件"
+          else
+            echo "sdkmanager: $SDKMGR"
+            yes | "$SDKMGR" --licenses > /dev/null 2>&1 || true
+            "$SDKMGR" "platforms;android-34" "build-tools;34.0.0" || true
+          fi
+
+          PLATFORM_DIR=""
+          for d in "$ANDROID_HOME/platforms"/*; do
+            if [ -f "$d/android.jar" ]; then PLATFORM_DIR="$d"; fi
+          done
+          if [ -z "$PLATFORM_DIR" ]; then
+            echo "错误：找不到任何 android.jar"
+            exit 1
+          fi
+          echo "使用 platform: $PLATFORM_DIR"
+          echo "ANDROID_JAR=$PLATFORM_DIR/android.jar" >> $GITHUB_ENV
+
+          BT_DIR=""
+          if [ -d "$ANDROID_HOME/build-tools/34.0.0" ]; then
+            BT_DIR="$ANDROID_HOME/build-tools/34.0.0"
+          else
+            BT_DIR=$(ls -1d "$ANDROID_HOME/build-tools"/* 2>/dev/null | sort -V | tail -1)
+          fi
+          if [ -z "$BT_DIR" ] || [ ! -x "$BT_DIR/aapt2" ]; then
+            echo "错误：找不到可用的 build-tools"
+            exit 1
+          fi
+          echo "使用 build-tools: $BT_DIR"
+          echo "BUILD_TOOLS=$BT_DIR" >> $GITHUB_ENV
+          "$BT_DIR/aapt2" version || true
 
       - name: 编译资源（aapt2 compile）
         run: |
+          set -e
           mkdir -p build/gen build/obj build/dex dist
           "$BUILD_TOOLS/aapt2" compile --dir jump_timer/src/res -o build/res.zip
 
       - name: 链接资源并生成 R.java（aapt2 link）
         run: |
+          set -e
           "$BUILD_TOOLS/aapt2" link \
             -o build/base.apk \
             -I "$ANDROID_JAR" \
@@ -43,9 +92,11 @@ jobs:
             --min-sdk-version 21 \
             --target-sdk-version 34 \
             build/res.zip
+          find build/gen -name "*.java" -exec cat {} \;
 
       - name: 编译 Java 源码
         run: |
+          set -e
           find jump_timer/src -name "*.java" > build/sources.txt
           find build/gen -name "*.java" >> build/sources.txt
           cat build/sources.txt
@@ -57,6 +108,7 @@ jobs:
 
       - name: 转换为 dex（d8）
         run: |
+          set -e
           find build/obj -name "*.class" > build/classes.txt
           "$BUILD_TOOLS/d8" --lib "$ANDROID_JAR" --min-api 21 \
             --output build/dex \
@@ -65,6 +117,7 @@ jobs:
 
       - name: 打包 dex 进 APK
         run: |
+          set -e
           cd build/dex
           zip -u ../base.apk classes.dex
           cd ../..
@@ -91,12 +144,7 @@ jobs:
             --key-pass pass:android \
             --out dist/JumpTimer.apk \
             build/aligned.apk
-          "$BUILD_TOOLS/apksigner" verify dist/JumpTimer.apk
-
-      - name: 显示产物信息
-        run: |
-          ls -lh dist/
-          echo "APK 构建完成"
+          "$BUILD_TOOLS/apksigner" verify --verbose dist/JumpTimer.apk
 
       - name: 上传 APK
         uses: actions/upload-artifact@v4
