@@ -1,13 +1,12 @@
 package com.timer.jump;
 
 import android.app.Activity;
-import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
-import android.view.Gravity;
+import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.LinearLayout;
@@ -17,6 +16,11 @@ import android.widget.Toast;
 
 /**
  * 主界面：申请两个权限，显示使用说明。
+ *
+ * 注意：这里全部用匿名内部类而不是 lambda。
+ * 原因：CI 用 JDK 17 编译、-bootclasspath 指向 android.jar，
+ * lambda 需要 LambdaMetafactory，而 android.jar 里没有，
+ * 会导致 "Unable to find method metafactory" 编译错误。
  */
 public class MainActivity extends Activity {
 
@@ -47,12 +51,22 @@ public class MainActivity extends Activity {
 
         Button btnOverlay = new Button(this);
         btnOverlay.setText("① 授予「悬浮窗」权限");
-        btnOverlay.setOnClickListener(v -> requestOverlay());
+        btnOverlay.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                requestOverlay();
+            }
+        });
         root.addView(btnOverlay);
 
         Button btnAccess = new Button(this);
         btnAccess.setText("② 开启「无障碍服务」");
-        btnAccess.setOnClickListener(v -> requestAccessibility());
+        btnAccess.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                requestAccessibility();
+            }
+        });
         root.addView(btnAccess);
 
         status = new TextView(this);
@@ -79,7 +93,7 @@ public class MainActivity extends Activity {
                         + "不检测的情况\n\n"
                         + "· 同一页面内的内容滚动、列表刷新\n"
                         + "· 输入法、系统权限弹窗（已过滤）\n"
-                        + "· Flutter / Compose 应用内部跳转（它们不产生新窗口，系统层面无法区分）\n\n\n"
+                        + "· Flutter / Compose 应用内部跳转（它们不产生新窗口）\n\n\n"
                         + "常见问题\n\n"
                         + "Q: 秒数不动？\n"
                         + "A: 检查无障碍服务是否已开启，部分手机需要「锁定后台」防止被杀。\n\n"
@@ -104,10 +118,6 @@ public class MainActivity extends Activity {
         sb.append("悬浮窗权限：").append(hasOverlay() ? "✅ 已授予" : "❌ 未授予").append("\n");
         sb.append("无障碍服务：").append(hasAccessibility() ? "✅ 已开启" : "❌ 未开启");
         status.setText(sb.toString());
-
-        if (hasOverlay() && hasAccessibility()) {
-            Toast.makeText(this, "已就绪，悬浮窗应已出现", Toast.LENGTH_SHORT).show();
-        }
     }
 
     private void requestOverlay() {
